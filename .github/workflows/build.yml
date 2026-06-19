@@ -1,0 +1,37 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  fmt:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+      - run: make fmt-check
+  test:
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+      - run: make test
+  goreleaser:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: build --snapshot --clean
+      - uses: actions/upload-artifact@v4
+        with:
+          name: providers
+          path: dist/*
