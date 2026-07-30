@@ -152,6 +152,54 @@ func Test_ResourceUserGroupMembersUpdate(t *testing.T) {
 	}
 }
 
+// A workspace can keep "create and disable user groups" closed to apps while
+// still allowing usergroups.users.update. Enabling is only a precondition for
+// updating a disabled group, so a rejected enable must not abort the update.
+func Test_ResourceUserGroupMembersUpdate_enableNotPermitted(t *testing.T) {
+	d := resourceSlackUserGroupMembers().TestResourceData()
+	d.SetId(testUserGroup.ID)
+	if err := d.Set("usergroup_id", testUserGroup.ID); err != nil {
+		t.Fatalf("err set usergroup_id: %s", err)
+	}
+	existingMembers := &schema.Set{F: schema.HashString}
+	for _, u := range testUserGroup.Users {
+		existingMembers.Add(u)
+	}
+	if err := d.Set("members", existingMembers); err != nil {
+		t.Fatalf("err setting existing members: %s", err)
+	}
+
+	newTestUserGroup := testUserGroup
+	newTestUserGroup.Users = append(newTestUserGroup.Users, "NUSERID")
+
+	ctx, team := createTestTeam(t, Routes{
+		{
+			Path:     "/usergroups.enable",
+			Response: slack.SlackResponse{Ok: false, Error: "permission_denied"},
+		},
+		{
+			Path: "/usergroups.users.update",
+			Response: userGroupResponse{
+				slack.SlackResponse{Ok: true},
+				newTestUserGroup,
+			},
+		},
+	})
+
+	if diags := resourceSlackUserGroupMembersUpdate(ctx, d, team); diags.HasError() {
+		for _, d := range diags {
+			if d.Severity == diag.Error {
+				t.Fatalf("err: %s", d.Summary)
+			}
+		}
+	}
+
+	members := d.Get("members").(*schema.Set)
+	if len(newTestUserGroup.Users) != members.Len() {
+		t.Fatalf("expect %v members but got %v", len(newTestUserGroup.Users), members.Len())
+	}
+}
+
 func Test_ResourceUserGroupMembersDelete(t *testing.T) {
 	d := resourceSlackUserGroupMembers().TestResourceData()
 	d.SetId(testUserGroup.ID)

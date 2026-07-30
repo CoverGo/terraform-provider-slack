@@ -20,6 +20,7 @@ func createTestTeam(t *testing.T, routes Routes) (context.Context, *Team) {
 	m := http.NewServeMux()
 
 	for _, route := range routes {
+		route := route // the handler runs after the loop, so bind per iteration
 		m.HandleFunc(route.Path, func(w http.ResponseWriter, r *http.Request) {
 			renderJson(w, route.Response)
 		})
