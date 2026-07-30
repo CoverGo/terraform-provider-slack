@@ -149,14 +149,24 @@ func resourceSlackUserGroupMembersUpdate(ctx context.Context, d *schema.Resource
 	logger.debug(ctx, "Enable the usergroup first because disabled usergroups reject updates")
 	_, err := client.EnableUserGroupContext(ctx, usergroupId)
 
+	// usergroups.enable is gated by the "create and disable user groups"
+	// workspace permission, which a workspace can keep closed to apps while
+	// still allowing usergroups.users.update. Enabling is only a precondition
+	// for updating members of a *disabled* group, so a rejected enable must
+	// not abort the update: if the group really is disabled, the members
+	// update below fails on its own with an explicit error.
 	if err != nil && err.Error() != "already_enabled" {
-		return diag.Diagnostics{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't activate the slack usergroup (%s) to update members due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.enable"),
-			},
+		if err.Error() != "permission_denied" {
+			return diag.Diagnostics{
+				{
+					Severity: diag.Error,
+					Summary:  fmt.Sprintf("Slack provider couldn't activate the slack usergroup (%s) to update members due to *%s*", usergroupId, err.Error()),
+					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.enable"),
+				},
+			}
 		}
+
+		logger.debug(ctx, "Not allowed to enable the usergroup, continuing to update members anyway")
 	}
 
 	iMembers := d.Get("members").(*schema.Set)
