@@ -109,9 +109,9 @@ func resourceSlackUserGroupChannelsRead(ctx context.Context, d *schema.ResourceD
 		}
 	}
 
-	// One shared, cached usergroups.list serves this read, the members read and
-	// the default-channels read — see usergroups_cache.go.
-	tempUserGroups, err := cachedUserGroups(ctx, client)
+	// One shared, cached usergroups.list serves this read, the usergroup read
+	// and the members read — see usergroups_cache.go.
+	userGroups, err := cachedUserGroups(ctx, client)
 
 	if err != nil {
 		return diag.Diagnostics{
@@ -123,6 +123,51 @@ func resourceSlackUserGroupChannelsRead(ctx context.Context, d *schema.ResourceD
 		}
 	}
 
+	for _, userGroup := range userGroups {
+		if userGroup.ID == usergroupId {
+			configureSlackUserGroupChannels(ctx, logger, d, userGroup)
+			return nil
+		}
+	}
+
+	return nil
+}
+
+func resourceSlackUserGroupChannelsUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
+	currentId := d.Id()
+
+	client := meta.(*Team).client
+	logger := meta.(*Team).logger.withTags(map[string]interface{}{
+		"resource":     "slack_usergroup_channels",
+		"usergroup_id": currentId,
+	})
+
+	logger.trace(ctx, "Start updating default channels of the usergroup")
+
+	usergroupId := d.Get("usergroup_id").(string)
+
+	if usergroupId != d.Id() {
+		return diag.Diagnostics{
+			{
+				Severity: diag.Error,
+				Summary:  fmt.Sprintf("it's not allowed to change usergroup id (from %s to %s)", currentId, usergroupId),
+				Detail:   "Please move the state or create another resource instead",
+			},
+		}
+	}
+
+	iChannels := d.Get("channels").(*schema.Set).List()
+	channelsIds := make([]string, len(iChannels))
+	for i, v := range iChannels {
+		channelsIds[i] = v.(string)
+	}
+
+	params := &slack.UserGroup{
+		ID: usergroupId,
+		Prefs: slack.UserGroupPrefs{
+			Channels: channelsIds,
+		},
+	}
 
 	userGroup, err := client.UpdateUserGroupContext(ctx, *params)
 
