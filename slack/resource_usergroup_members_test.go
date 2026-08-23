@@ -1,10 +1,12 @@
 package slack
 
 import (
+	"os"
+	"testing"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/slack-go/slack"
-	"testing"
 )
 
 func stringInSlice(slice []string, val string) bool {
@@ -21,9 +23,18 @@ type userGroupResponse struct {
 	UserGroup slack.UserGroup `json:"usergroup"`
 }
 
-type userGroupUsersListResponse struct {
+type userGroupListResponse struct {
 	slack.SlackResponse
-	Users []string `json:"users"`
+	UserGroups []slack.UserGroup `json:"usergroups"`
+}
+
+// clearUserGroupCache drops the on-disk usergroups.list cache so a test never
+// reads what an earlier one wrote. The cache lives for 6 seconds, which is long
+// enough for tests in the same package to see each other's.
+func clearUserGroupCache(t *testing.T) {
+	t.Helper()
+	_ = os.RemoveAll(cacheDir)
+	t.Cleanup(func() { _ = os.RemoveAll(cacheDir) })
 }
 
 var testUserGroup = slack.UserGroup{
@@ -32,13 +43,23 @@ var testUserGroup = slack.UserGroup{
 }
 
 func Test_ResourceUserGroupMembersRead(t *testing.T) {
+	// Read now takes membership from the shared usergroups.list cache rather
+	// than calling usergroups.users.list per group, so the group has to be
+	// identifiable and the list has to carry its users.
+	clearUserGroupCache(t)
+
 	d := resourceSlackUserGroupMembers().TestResourceData()
+	d.SetId(testUserGroup.ID)
+	if err := d.Set("usergroup_id", testUserGroup.ID); err != nil {
+		t.Fatalf("err: %s", err)
+	}
+
 	ctx, team := createTestTeam(t, Routes{
 		{
-			Path: "/usergroups.users.list",
-			Response: userGroupUsersListResponse{
+			Path: "/usergroups.list",
+			Response: userGroupListResponse{
 				slack.SlackResponse{Ok: true},
-				testUserGroup.Users,
+				[]slack.UserGroup{testUserGroup},
 			},
 		},
 	})
