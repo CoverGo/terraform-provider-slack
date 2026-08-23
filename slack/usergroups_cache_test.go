@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,7 +60,7 @@ func Test_cachedUserGroups_requestsUsersAndServesFromCache(t *testing.T) {
 
 	client, stats := cacheTestServer(t, []slack.UserGroup{testUserGroup})
 
-	first, err := cachedUserGroups(t.Context(), client)
+	first, err := cachedUserGroups(context.Background(), client)
 	if err != nil {
 		t.Fatalf("err: %s", err)
 	}
@@ -80,7 +81,7 @@ func Test_cachedUserGroups_requestsUsersAndServesFromCache(t *testing.T) {
 
 	// A second read inside the cache window must not hit the API again: that is
 	// the entire point, ~83 per-group calls collapsing to one.
-	second, err := cachedUserGroups(t.Context(), client)
+	second, err := cachedUserGroups(context.Background(), client)
 	if err != nil {
 		t.Fatalf("err on the cached read: %s", err)
 	}
@@ -104,7 +105,7 @@ func Test_cachedUserGroups_refetchesWhenCacheUnreadable(t *testing.T) {
 
 	client, stats := cacheTestServer(t, []slack.UserGroup{testUserGroup})
 
-	if _, err := cachedUserGroups(t.Context(), client); err != nil {
+	if _, err := cachedUserGroups(context.Background(), client); err != nil {
 		t.Fatalf("err: %s", err)
 	}
 
@@ -112,7 +113,7 @@ func Test_cachedUserGroups_refetchesWhenCacheUnreadable(t *testing.T) {
 		t.Fatalf("err corrupting the cache: %s", err)
 	}
 
-	groups, err := cachedUserGroups(t.Context(), client)
+	groups, err := cachedUserGroups(context.Background(), client)
 	if err != nil {
 		t.Fatalf("err after corrupting the cache: %s", err)
 	}
