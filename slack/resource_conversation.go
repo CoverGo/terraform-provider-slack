@@ -127,8 +127,8 @@ func resourceSlackConversationCreate(ctx context.Context, d *schema.ResourceData
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't create a slack conversation (%s, isPrivate = %t) due to *%s*", name, isPrivate, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.create"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't create a slack conversation (%s, isPrivate = %t)", name, isPrivate)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.create"),
 			},
 		}
 	} else {
@@ -157,8 +157,8 @@ func resourceSlackConversationRead(ctx context.Context, d *schema.ResourceData, 
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't find a slack conversation (%s) due to *%s*", id, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.info"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't find a slack conversation (%s)", id)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.info"),
 			},
 		}
 	} else {
@@ -187,8 +187,8 @@ func resourceSlackConversationUpdate(ctx context.Context, d *schema.ResourceData
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't rename a slack conversation (%s) to %s due to *%s*", id, name, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.rename"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't rename a slack conversation (%s) to %s", id, name)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.rename"),
 			},
 		}
 	} else {
@@ -200,8 +200,8 @@ func resourceSlackConversationUpdate(ctx context.Context, d *schema.ResourceData
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't set a topic of a slack conversation (%s) to %s due to *%s*", id, topic.(string), err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.setTopic"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't set a topic of a slack conversation (%s) to %s", id, topic.(string))),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.setTopic"),
 				},
 			}
 		}
@@ -214,8 +214,8 @@ func resourceSlackConversationUpdate(ctx context.Context, d *schema.ResourceData
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't set a purpose of a slack conversation (%s) to %s due to *%s*", id, purpose.(string), err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.setPurpose"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't set a purpose of a slack conversation (%s) to %s", id, purpose.(string))),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.setPurpose"),
 				},
 			}
 		}
@@ -228,8 +228,8 @@ func resourceSlackConversationUpdate(ctx context.Context, d *schema.ResourceData
 					return diag.Diagnostics{
 						{
 							Severity: diag.Error,
-							Summary:  fmt.Sprintf("Slack provider couldn't archive a slack conversation (%s) due to *%s*", id, err.Error()),
-							Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.archive"),
+							Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't archive a slack conversation (%s)", id)),
+							Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.archive"),
 						},
 					}
 				} else {
@@ -244,8 +244,8 @@ func resourceSlackConversationUpdate(ctx context.Context, d *schema.ResourceData
 					return diag.Diagnostics{
 						{
 							Severity: diag.Error,
-							Summary:  fmt.Sprintf("Slack provider couldn't unarchive a slack conversation (%s) due to *%s*", id, err.Error()),
-							Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.unarchive"),
+							Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't unarchive a slack conversation (%s)", id)),
+							Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.unarchive"),
 						},
 					}
 				} else {
@@ -282,8 +282,8 @@ func resourceSlackConversationDelete(ctx context.Context, d *schema.ResourceData
 				return diag.Diagnostics{
 					{
 						Severity: diag.Error,
-						Summary:  fmt.Sprintf("Slack provider couldn't archive a slack conversation (%s) due to *%s*", id, err.Error()),
-						Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/conversations.archive"),
+						Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't archive a slack conversation (%s)", id)),
+						Detail:   slackErrDetail(err, "https://api.slack.com/methods/conversations.archive"),
 					},
 				}
 			} else {

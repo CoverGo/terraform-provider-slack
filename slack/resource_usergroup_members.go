@@ -70,8 +70,8 @@ func resourceSlackUserGroupMembersCreate(ctx context.Context, d *schema.Resource
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't attach members of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.users.update"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't attach members of the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.users.update"),
 			},
 		}
 	}
@@ -110,8 +110,8 @@ func resourceSlackUserGroupMembersRead(ctx context.Context, d *schema.ResourceDa
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't read members of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.users.list"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't read members of the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.users.list"),
 			},
 		}
 	}
@@ -160,8 +160,8 @@ func resourceSlackUserGroupMembersUpdate(ctx context.Context, d *schema.Resource
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't activate the slack usergroup (%s) to update members due to *%s*", usergroupId, err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.enable"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't activate the slack usergroup (%s) to update members", usergroupId)),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.enable"),
 				},
 			}
 		}
@@ -182,8 +182,8 @@ func resourceSlackUserGroupMembersUpdate(ctx context.Context, d *schema.Resource
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't update members of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.users.update"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't update members of the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.users.update"),
 			},
 		}
 	}
@@ -223,8 +223,8 @@ func resourceSlackUserGroupMembersDelete(ctx context.Context, d *schema.Resource
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't disable the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.disable"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't disable the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.disable"),
 			},
 		}
 	}

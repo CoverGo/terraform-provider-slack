@@ -90,8 +90,8 @@ func dataSourceSlackUserRead(ctx context.Context, d *schema.ResourceData, meta i
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't find a slack user (%s) due to *%s*", queryValue, err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/users.info"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't find a slack user (%s)", queryValue)),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/users.info"),
 				},
 			}
 		} else {
@@ -113,8 +113,8 @@ func dataSourceSlackUserRead(ctx context.Context, d *schema.ResourceData, meta i
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't find a slack user (%s) due to *%s*", queryValue, err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/users.lookupByEmail"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't find a slack user (%s)", queryValue)),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/users.lookupByEmail"),
 				},
 			}
 		} else {
@@ -138,8 +138,8 @@ func dataSourceSlackUserRead(ctx context.Context, d *schema.ResourceData, meta i
 				return diag.Diagnostics{
 					{
 						Severity: diag.Error,
-						Summary:  fmt.Sprintf("Slack provider couldn't find a slack user (%s) due to *%s*", queryValue, err.Error()),
-						Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/users.list"),
+						Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't find a slack user (%s)", queryValue)),
+						Detail:   slackErrDetail(err, "https://api.slack.com/methods/users.list"),
 					},
 				}
 			} else {

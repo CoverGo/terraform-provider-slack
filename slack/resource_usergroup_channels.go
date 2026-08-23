@@ -123,8 +123,8 @@ func resourceSlackUserGroupChannelsRead(ctx context.Context, d *schema.ResourceD
 			return diag.Diagnostics{
 				{
 					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
+					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s)", usergroupId)),
+					Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.list"),
 				},
 			}
 		} else {
@@ -198,8 +198,8 @@ func resourceSlackUserGroupChannelsUpdate(ctx context.Context, d *schema.Resourc
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't update the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.update"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't update the default channels of the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.update"),
 			},
 		}
 	}
@@ -244,8 +244,8 @@ func resourceSlackUserGroupChannelsDelete(ctx context.Context, d *schema.Resourc
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Slack provider couldn't remove all default channels from the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.update"),
+				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't remove all default channels from the slack usergroup (%s)", usergroupId)),
+				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.update"),
 			},
 		}
 	}
