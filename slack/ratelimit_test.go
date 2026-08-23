@@ -1,12 +1,15 @@
 package slack
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // A 429 must be retried, and the retry must carry the same body. Replaying a
@@ -114,5 +117,128 @@ func Test_rateLimitedClient_backsOffPerMethod(t *testing.T) {
 	}
 	if untouched != 0 {
 		t.Fatalf("expected other methods to stay unthrottled, got %s", untouched)
+	}
+}
+
+// A persistent 429 must stop after maxRetries rather than retrying forever, and
+// the response handed back must still carry a parsable Retry-After: slack-go
+// parses that header with strconv and returns the PARSE error when it is
+// unusable, which would report a rate limit as an invalid-syntax error.
+func Test_rateLimitedClient_givesUpAndKeepsRetryAfterParsable(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		// Deliberately no Retry-After header.
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newRateLimitedClient()
+	client.maxRetries = 2
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/usergroups.list", strings.NewReader("token=test"))
+	if err != nil {
+		t.Fatalf("err building request: %s", err)
+	}
+
+	// Without a Retry-After the client falls back to defaultWait; shrink it so
+	// the test does not sleep out two real cooldowns.
+	client.defaultWait = 10 * time.Millisecond
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected the 429 to be handed back, got %d", resp.StatusCode)
+	}
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if want := client.maxRetries + 1; got != want {
+		t.Fatalf("expected %d attempts, got %d", want, got)
+	}
+
+	if _, err := strconv.ParseInt(resp.Header.Get("Retry-After"), 10, 64); err != nil {
+		t.Fatalf("Retry-After must stay parsable for slack-go, got %q: %s",
+			resp.Header.Get("Retry-After"), err)
+	}
+}
+
+// A long Retry-After is a one-off cooldown, not the ongoing pace. Carrying it
+// forward as the interval would pin the method to one request per Retry-After
+// for the rest of the run and turn a large apply into hours.
+func Test_rateLimitedClient_sustainedSpacingIsBounded(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600") // ten minutes
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newRateLimitedClient()
+	client.maxRetries = 0 // give up immediately; we only want the bookkeeping
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/usergroups.update", strings.NewReader("token=test"))
+	if err != nil {
+		t.Fatalf("err building request: %s", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("err: %s", err)
+	}
+	_ = resp.Body.Close()
+
+	client.mu.Lock()
+	spacing := client.spacing["/api/usergroups.update"]
+	deadline := client.nextAllowed["/api/usergroups.update"]
+	client.mu.Unlock()
+
+	if spacing > maxSustainedSpacing {
+		t.Fatalf("sustained spacing %s exceeds the %s cap", spacing, maxSustainedSpacing)
+	}
+	// The full cooldown is still honoured, just not as the ongoing interval.
+	if until := time.Until(deadline); until < time.Minute {
+		t.Fatalf("expected the full Retry-After cooldown, deadline is only %s away", until)
+	}
+}
+
+// A cancelled context must abandon the wait instead of sleeping it out, so
+// interrupting Terraform does not hang on a backing-off request.
+func Test_rateLimitedClient_honoursContextCancellation(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "60")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(ts.Close)
+
+	client := newRateLimitedClient()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/api/usergroups.list", strings.NewReader("token=test"))
+	if err != nil {
+		t.Fatalf("err building request: %s", err)
+	}
+
+	// Cancel while the client is sleeping off the first 429.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	if _, err := client.Do(req); err == nil {
+		t.Fatal("expected an error once the context was cancelled")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("expected the wait to be abandoned promptly, took %s", elapsed)
 	}
 }

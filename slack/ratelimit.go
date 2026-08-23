@@ -29,10 +29,11 @@ import (
 //   - Cap requests in flight, so Terraform's parallelism does not turn into a
 //     burst Slack immediately refuses.
 //   - Retry a 429 for as long as Slack asks, up to maxRetries.
-//   - After a method is rate limited once, keep a minimum spacing between
-//     subsequent calls to THAT method for the rest of the run. Backing off only
-//     the method that complained keeps unrelated calls at full speed, and stops
-//     the next burst from walking straight back into the same wall.
+//   - After a method is rate limited, serve the full Retry-After as a one-off
+//     cooldown and then keep a BOUNDED interval between later calls to THAT
+//     method. Backing off only the method that complained keeps unrelated calls
+//     at full speed, and bounding the ongoing interval stops a single long
+//     Retry-After from pinning the method to that pace for the whole run.
 //
 // Beyond the concurrency cap nothing is throttled until Slack objects, so a
 // small change stays fast.
@@ -45,6 +46,20 @@ const (
 
 	// Ceiling on a single sleep, so a hostile value cannot hang an apply.
 	maxRetryAfter = 2 * time.Minute
+
+	// Ceiling on the sustained spacing kept for a method after it has been
+	// limited.
+	//
+	// Retry-After is a one-off cooldown, not a sustainable cadence: Slack can
+	// answer a burst with "wait 60s" and still accept 20 requests a minute
+	// afterwards. Carrying that 60s forward as the ongoing interval would pin
+	// the method to one request a minute for the rest of the run and turn a
+	// large apply into hours. The cooldown is honoured in full through
+	// nextAllowed; this caps only what happens after it.
+	//
+	// 3s is one request every three seconds, i.e. 20/min — the rate Slack's
+	// strictest relevant tier allows.
+	maxSustainedSpacing = 3 * time.Second
 
 	// Requests allowed in flight at once, across all methods.
 	//
@@ -64,6 +79,10 @@ type rateLimitedClient struct {
 
 	// Buffered channel used as a semaphore bounding in-flight requests.
 	slots chan struct{}
+
+	// Wait used when a 429 arrives without a usable Retry-After. A field
+	// rather than a constant so tests are not forced to sleep it out.
+	defaultWait time.Duration
 
 	mu sync.Mutex
 	// Earliest time the next request to a given API method may start. Only
@@ -92,6 +111,7 @@ func newRateLimitedClient() *rateLimitedClient {
 		inner:       &http.Client{Timeout: 60 * time.Second},
 		maxRetries:  retries,
 		slots:       make(chan struct{}, concurrent),
+		defaultWait: defaultRetryAfter,
 		nextAllowed: map[string]time.Time{},
 		spacing:     map[string]time.Duration{},
 	}
@@ -126,17 +146,25 @@ func (c *rateLimitedClient) reserve(req *http.Request) error {
 	return sleepUntil(req, time.Until(start))
 }
 
-// penalise records that a method pushed back, so later calls to it are spaced.
+// penalise records that a method pushed back: the full Retry-After is served as
+// a one-off cooldown, and a bounded interval is kept afterwards so the method
+// does not immediately burst back into the same limit.
 func (c *rateLimitedClient) penalise(req *http.Request, retryAfter time.Duration) {
 	key := method(req.URL)
 
+	sustained := retryAfter
+	if sustained > maxSustainedSpacing {
+		sustained = maxSustainedSpacing
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if retryAfter > c.spacing[key] {
-		c.spacing[key] = retryAfter
+	if sustained > c.spacing[key] {
+		c.spacing[key] = sustained
 	}
-	// Hold every other in-flight call to this method until the wait is over,
-	// rather than letting them queue up behind their own 429s.
+	// Hold every other in-flight call to this method until the cooldown is
+	// over, rather than letting them queue up behind their own 429s. This uses
+	// the full Retry-After — only the ongoing interval above is capped.
 	if t := time.Now().Add(retryAfter); t.After(c.nextAllowed[key]) {
 		c.nextAllowed[key] = t
 	}
@@ -156,7 +184,7 @@ func sleepUntil(req *http.Request, d time.Duration) error {
 	}
 }
 
-func retryAfterFrom(resp *http.Response) time.Duration {
+func (c *rateLimitedClient) retryAfterFrom(resp *http.Response) time.Duration {
 	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
 		d := time.Duration(secs) * time.Second
 		if d > maxRetryAfter {
@@ -164,7 +192,7 @@ func retryAfterFrom(resp *http.Response) time.Duration {
 		}
 		return d
 	}
-	return defaultRetryAfter
+	return c.defaultWait
 }
 
 func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
@@ -206,13 +234,23 @@ func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
 			return resp, nil
 		}
 
-		wait := retryAfterFrom(resp)
+		wait := c.retryAfterFrom(resp)
 		c.penalise(req, wait)
 
 		// Out of attempts: hand the 429 back so slack-go turns it into a
 		// *slack.RateLimitedError, whose message states the rate limit and the
 		// Retry-After Slack asked for.
+		//
+		// slack-go parses that header with strconv and returns the PARSE error
+		// when it is missing or malformed — which would report a rate limit as
+		// `strconv.ParseInt: parsing "": invalid syntax`. Write back the value
+		// actually used so the diagnostic names the real cause either way.
 		if attempt >= c.maxRetries {
+			secs := int(wait / time.Second)
+			if secs < 1 {
+				secs = 1
+			}
+			resp.Header.Set("Retry-After", strconv.Itoa(secs))
 			return resp, nil
 		}
 
