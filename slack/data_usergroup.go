@@ -63,8 +63,8 @@ func dataSlackUserGroupRead(ctx context.Context, d *schema.ResourceData, meta in
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't find a usergroup (%s)", usergroupId)),
-				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.list"),
+				Summary:  fmt.Sprintf("provicer cannot find a usergroup (%s) due to *%s*", usergroupId, err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
 			},
 		}
 	} else {

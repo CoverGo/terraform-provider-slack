@@ -1,0 +1,42 @@
+package slack
+
+import (
+	"context"
+
+	"github.com/slack-go/slack"
+)
+
+// One cached usergroups.list for everything that needs to read a usergroup.
+//
+// usergroups.list returns every group in a single response, and with
+// include_users it carries each group's membership too. Three reads need that
+// data — the usergroup itself, its default channels, and its members — and
+// before this they were split: the first two shared a cached list, while
+// members called usergroups.users.list once per group. A refresh of 80-odd
+// teams therefore issued 80-odd extra requests against a Tier 2 endpoint
+// (~20/min), which is enough on its own to rate limit a plan.
+//
+// Fetching with IncludeUsers means one call serves all three. The flag has to
+// be set by every caller that populates the cache, or a reader that needs
+// members can find a cached list that has none.
+func cachedUserGroups(ctx context.Context, client *slack.Client) ([]slack.UserGroup, error) {
+	var cached *[]slack.UserGroup
+
+	if restoreJsonCache(userGroupListCacheFileName, &cached) && cached != nil {
+		return *cached, nil
+	}
+
+	userGroups, err := client.GetUserGroupsContext(ctx, func(params *slack.GetUserGroupsParams) {
+		// Carries each group's members, so usergroups.users.list is not needed.
+		params.IncludeUsers = true
+		params.IncludeCount = false
+		params.IncludeDisabled = true
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	saveCacheAsJson(userGroupListCacheFileName, &userGroups)
+
+	return userGroups, nil
+}

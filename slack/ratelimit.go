@@ -24,15 +24,18 @@ import (
 // underneath slack-go (via slack.OptionHTTPClient) so every method is covered
 // at once, including any added later.
 //
-// Two behaviours:
+// Three behaviours:
 //
+//   - Cap requests in flight, so Terraform's parallelism does not turn into a
+//     burst Slack immediately refuses.
 //   - Retry a 429 for as long as Slack asks, up to maxRetries.
 //   - After a method is rate limited once, keep a minimum spacing between
 //     subsequent calls to THAT method for the rest of the run. Backing off only
 //     the method that complained keeps unrelated calls at full speed, and stops
 //     the next burst from walking straight back into the same wall.
 //
-// Nothing is throttled until Slack objects, so a small change stays fast.
+// Beyond the concurrency cap nothing is throttled until Slack objects, so a
+// small change stays fast.
 
 const (
 	defaultMaxRetries = 5
@@ -42,6 +45,15 @@ const (
 
 	// Ceiling on a single sleep, so a hostile value cannot hang an apply.
 	maxRetryAfter = 2 * time.Minute
+
+	// Requests allowed in flight at once, across all methods.
+	//
+	// Terraform's own -parallelism defaults to 10, and each Slack call takes
+	// around 0.14s, so ten workers can push ~4,000 requests a minute at
+	// endpoints that allow 20. Capping concurrency here rather than asking
+	// everyone to remember -parallelism keeps the burst small whatever
+	// Terraform is doing, and costs nothing on small changes.
+	defaultMaxConcurrent = 2
 )
 
 // rateLimitedClient is an http.Client wrapper satisfying slack-go's httpClient
@@ -49,6 +61,9 @@ const (
 type rateLimitedClient struct {
 	inner      *http.Client
 	maxRetries int
+
+	// Buffered channel used as a semaphore bounding in-flight requests.
+	slots chan struct{}
 
 	mu sync.Mutex
 	// Earliest time the next request to a given API method may start. Only
@@ -66,9 +81,17 @@ func newRateLimitedClient() *rateLimitedClient {
 		}
 	}
 
+	concurrent := defaultMaxConcurrent
+	if v := os.Getenv("SLACK_MAX_CONCURRENT_REQUESTS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			concurrent = n
+		}
+	}
+
 	return &rateLimitedClient{
 		inner:       &http.Client{Timeout: 60 * time.Second},
 		maxRetries:  retries,
+		slots:       make(chan struct{}, concurrent),
 		nextAllowed: map[string]time.Time{},
 		spacing:     map[string]time.Duration{},
 	}
@@ -158,6 +181,15 @@ func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 
+	// Hold a slot for the duration of the request, retries included, so a
+	// backing-off request does not free capacity for another burst.
+	select {
+	case c.slots <- struct{}{}:
+		defer func() { <-c.slots }()
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+
 	for attempt := 0; ; attempt++ {
 		if err := c.reserve(req); err != nil {
 			return nil, err
@@ -178,7 +210,8 @@ func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
 		c.penalise(req, wait)
 
 		// Out of attempts: hand the 429 back so slack-go turns it into a
-		// *slack.RateLimitedError and the diagnostic names the real cause.
+		// *slack.RateLimitedError, whose message states the rate limit and the
+		// Retry-After Slack asked for.
 		if attempt >= c.maxRetries {
 			return resp, nil
 		}

@@ -109,88 +109,20 @@ func resourceSlackUserGroupChannelsRead(ctx context.Context, d *schema.ResourceD
 		}
 	}
 
-	// Use a cache for usergroups api call because the limitation is strict
-	var userGroups *[]slack.UserGroup
+	// One shared, cached usergroups.list serves this read, the members read and
+	// the default-channels read — see usergroups_cache.go.
+	tempUserGroups, err := cachedUserGroups(ctx, client)
 
-	if !restoreJsonCache(userGroupListCacheFileName, &userGroups) {
-		tempUserGroups, err := client.GetUserGroupsContext(ctx, func(params *slack.GetUserGroupsParams) {
-			params.IncludeUsers = false
-			params.IncludeCount = false
-			params.IncludeDisabled = true
-		})
-
-		if err != nil {
-			return diag.Diagnostics{
-				{
-					Severity: diag.Error,
-					Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s)", usergroupId)),
-					Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.list"),
-				},
-			}
-		} else {
-			logger.trace(ctx, "Got a response from Slack API")
-		}
-
-		userGroups = &tempUserGroups
-
-		saveCacheAsJson(userGroupListCacheFileName, &userGroups)
-	}
-
-	if userGroups == nil {
+	if err != nil {
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Serious error happened while reading default channles of the slack usergroup (%s)", usergroupId),
-				Detail:   "Internal provider error. Please open an issue at https://github.com/CoverGo/terraform-provider-slack",
+				Summary:  fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
 			},
 		}
 	}
 
-	for _, userGroup := range *userGroups {
-		if userGroup.ID == usergroupId {
-			configureSlackUserGroupChannels(ctx, logger, d, userGroup)
-			return nil
-		}
-	}
-
-	return nil
-}
-
-func resourceSlackUserGroupChannelsUpdate(ctx context.Context, d *schema.ResourceData, meta interface{}) diag.Diagnostics {
-	currentId := d.Id()
-
-	client := meta.(*Team).client
-	logger := meta.(*Team).logger.withTags(map[string]interface{}{
-		"resource":     "slack_usergroup_channels",
-		"usergroup_id": currentId,
-	})
-
-	logger.trace(ctx, "Start updating default channels of the usergroup")
-
-	usergroupId := d.Get("usergroup_id").(string)
-
-	if usergroupId != d.Id() {
-		return diag.Diagnostics{
-			{
-				Severity: diag.Error,
-				Summary:  fmt.Sprintf("it's not allowed to change usergroup id (from %s to %s)", currentId, usergroupId),
-				Detail:   "Please move the state or create another resource instead",
-			},
-		}
-	}
-
-	iChannels := d.Get("channels").(*schema.Set).List()
-	channelsIds := make([]string, len(iChannels))
-	for i, v := range iChannels {
-		channelsIds[i] = v.(string)
-	}
-
-	params := &slack.UserGroup{
-		ID: usergroupId,
-		Prefs: slack.UserGroupPrefs{
-			Channels: channelsIds,
-		},
-	}
 
 	userGroup, err := client.UpdateUserGroupContext(ctx, *params)
 
@@ -198,8 +130,8 @@ func resourceSlackUserGroupChannelsUpdate(ctx context.Context, d *schema.Resourc
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't update the default channels of the slack usergroup (%s)", usergroupId)),
-				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.update"),
+				Summary:  fmt.Sprintf("Slack provider couldn't update the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.update"),
 			},
 		}
 	}
@@ -244,8 +176,8 @@ func resourceSlackUserGroupChannelsDelete(ctx context.Context, d *schema.Resourc
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  slackErrSummary(err, fmt.Sprintf("Slack provider couldn't remove all default channels from the slack usergroup (%s)", usergroupId)),
-				Detail:   slackErrDetail(err, "https://api.slack.com/methods/usergroups.update"),
+				Summary:  fmt.Sprintf("Slack provider couldn't remove all default channels from the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.update"),
 			},
 		}
 	}
