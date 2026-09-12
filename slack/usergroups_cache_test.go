@@ -226,3 +226,73 @@ func Test_cachedUserGroups_collapsesConcurrentMisses(t *testing.T) {
 		t.Fatalf("expected %d concurrent readers to share 1 API call, saw %d", workers, calls)
 	}
 }
+
+// A failing fetch is shared too, not repeated once per waiter.
+//
+// Sharing only the fetch slot would serialise the failure instead of removing
+// it: each queued caller finds the cache still empty and tries again in turn, so
+// the cost grows with the worker count. When the failure is an exhausted rate
+// limit — the case this whole change exists for — each of those attempts is
+// itself several cooldowns long.
+func Test_cachedUserGroups_sharesTheFailure(t *testing.T) {
+	clearUserGroupCache(t)
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/usergroups.list", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+
+		// Wide enough for every caller to have queued behind this one.
+		time.Sleep(50 * time.Millisecond)
+
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	client := slack.New("test_token",
+		slack.Option(slack.OptionHTTPClient(ts.Client())),
+		slack.OptionAPIURL(ts.URL+"/"))
+
+	const workers = 8
+
+	var (
+		wg   sync.WaitGroup
+		errs = make([]error, workers)
+	)
+
+	start := time.Now()
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = cachedUserGroups(context.Background(), client)
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	for i, err := range errs {
+		if err == nil {
+			t.Fatalf("worker %d saw no error from a failing API", i)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected %d workers to share 1 failed call, saw %d", workers, calls)
+	}
+
+	// Serialised retries would cost roughly one 50ms failure per worker.
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("expected the failure to be shared, but %d workers took %s", workers, elapsed.Round(time.Millisecond))
+	}
+}
