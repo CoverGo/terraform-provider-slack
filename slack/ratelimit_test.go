@@ -206,7 +206,7 @@ func Test_rateLimitedClient_sustainedSpacingIsBounded(t *testing.T) {
 		t.Fatalf("sustained spacing %s exceeds the %s cap", spacing, maxSustainedSpacing)
 	}
 	// The full cooldown is still honoured, just not as the ongoing interval.
-	if until := time.Until(deadline); until < time.Minute {
+	if until := time.Until(deadline); until < 9*time.Minute {
 		t.Fatalf("expected the full Retry-After cooldown, deadline is only %s away", until)
 	}
 }
@@ -240,5 +240,97 @@ func Test_rateLimitedClient_honoursContextCancellation(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("expected the wait to be abandoned promptly, took %s", elapsed)
+	}
+}
+
+// Slack's Retry-After is what it will actually accept, so it is waited in full.
+// Cutting a long cooldown short only spends a retry on another 429, and the
+// caller would then see the retries exhausted before Slack ever said yes.
+func Test_rateLimitedClient_waitsTheFullRetryAfter(t *testing.T) {
+	client := newRateLimitedClient()
+
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("Retry-After", "600")
+
+	if got, want := client.retryAfterFrom(resp), 600*time.Second; got != want {
+		t.Fatalf("Retry-After of 600s became %s, want %s", got, want)
+	}
+}
+
+// Backing off must not hold a concurrency slot. With the default cap of two, a
+// couple of 429s from one method would otherwise occupy every slot for the
+// whole cooldown and stall methods Slack never complained about.
+func Test_rateLimitedClient_backoffDoesNotBlockOtherMethods(t *testing.T) {
+	limited := make(chan struct{}, 8)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/usergroups.users.update", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+
+		// Never block the handler: these requests keep retrying until the test
+		// cancels them, and a full channel here would wedge the server's
+		// shutdown rather than fail the test.
+		select {
+		case limited <- struct{}{}:
+		default:
+		}
+	})
+	mux.HandleFunc("/api/usergroups.list", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	client := newRateLimitedClient()
+
+	// Fill both slots with requests that are about to back off.
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	for i := 0; i < cap(client.slots); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+				ts.URL+"/api/usergroups.users.update", strings.NewReader("token=test"))
+			if err != nil {
+				return
+			}
+			if resp, err := client.Do(req); err == nil {
+				_ = resp.Body.Close()
+			}
+		}()
+	}
+	defer func() {
+		cancel()
+		wg.Wait()
+	}()
+
+	// Wait until both are in their cooldown rather than on the wire.
+	for i := 0; i < cap(client.slots); i++ {
+		select {
+		case <-limited:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for the limited method to be refused")
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/api/usergroups.list", strings.NewReader("token=test"))
+	if err != nil {
+		t.Fatalf("err building request: %s", err)
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("err on the unrelated method: %s", err)
+	}
+	_ = resp.Body.Close()
+
+	// The backing-off requests are sleeping for three seconds. An unrelated
+	// method must not be waiting on them.
+	if elapsed := time.Since(start); elapsed > 1500*time.Millisecond {
+		t.Fatalf("an unrelated method waited %s on another method's cooldown", elapsed)
 	}
 }

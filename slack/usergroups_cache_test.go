@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 	"github.com/slack-go/slack"
@@ -156,5 +157,72 @@ func Test_ResourceUserGroupMembersRead_missingGroupClearsId(t *testing.T) {
 	}
 	if members := d.Get("members").(*schema.Set); members.Len() != 0 {
 		t.Fatalf("expected no members to be recorded, got %d", members.Len())
+	}
+}
+
+// Concurrent misses must collapse into a single usergroups.list.
+//
+// The cache check and the fetch are separate steps, so without the fetch slot
+// every Terraform worker that misses issues its own request before the first
+// writes the file — the burst this cache exists to remove.
+func Test_cachedUserGroups_collapsesConcurrentMisses(t *testing.T) {
+	clearUserGroupCache(t)
+
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/usergroups.list", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+
+		// Wide enough for every caller to have missed the cache already.
+		time.Sleep(50 * time.Millisecond)
+
+		renderJson(w, userGroupListResponse{slack.SlackResponse{Ok: true}, []slack.UserGroup{testUserGroup}})
+	})
+
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	client := slack.New("test_token",
+		slack.Option(slack.OptionHTTPClient(ts.Client())),
+		slack.OptionAPIURL(ts.URL+"/"))
+
+	const workers = 8
+
+	var (
+		wg      sync.WaitGroup
+		results = make([][]slack.UserGroup, workers)
+		errs    = make([]error, workers)
+	)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = cachedUserGroups(context.Background(), client)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d: %s", i, err)
+		}
+		if len(results[i]) != 1 || results[i][0].ID != testUserGroup.ID {
+			t.Fatalf("worker %d got %+v", i, results[i])
+		}
+		if len(results[i][0].Users) != len(testUserGroup.Users) {
+			t.Fatalf("worker %d lost the members: %v", i, results[i][0].Users)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("expected %d concurrent readers to share 1 API call, saw %d", workers, calls)
 	}
 }

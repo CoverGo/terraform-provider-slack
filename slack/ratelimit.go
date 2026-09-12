@@ -28,7 +28,10 @@ import (
 //
 //   - Cap requests in flight, so Terraform's parallelism does not turn into a
 //     burst Slack immediately refuses.
-//   - Retry a 429 for as long as Slack asks, up to maxRetries.
+//   - Retry a 429 for as long as Slack asks, up to maxRetries. The wait is not
+//     capped: Slack's Retry-After is what it will actually accept, and cutting
+//     it short only spends a retry on another 429. The request context bounds
+//     it instead, so interrupting Terraform still returns promptly.
 //   - After a method is rate limited, serve the full Retry-After as a one-off
 //     cooldown and then keep a BOUNDED interval between later calls to THAT
 //     method. Backing off only the method that complained keeps unrelated calls
@@ -43,9 +46,6 @@ const (
 
 	// Fallback when a 429 arrives without a usable Retry-After.
 	defaultRetryAfter = 30 * time.Second
-
-	// Ceiling on a single sleep, so a hostile value cannot hang an apply.
-	maxRetryAfter = 2 * time.Minute
 
 	// Ceiling on the sustained spacing kept for a method after it has been
 	// limited.
@@ -186,13 +186,28 @@ func sleepUntil(req *http.Request, d time.Duration) error {
 
 func (c *rateLimitedClient) retryAfterFrom(resp *http.Response) time.Duration {
 	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
-		d := time.Duration(secs) * time.Second
-		if d > maxRetryAfter {
-			return maxRetryAfter
-		}
-		return d
+		return time.Duration(secs) * time.Second
 	}
 	return c.defaultWait
+}
+
+// send performs one round trip holding a concurrency slot.
+//
+// The slot covers the request and nothing else. Holding it across a backoff
+// would let a couple of 429s occupy every slot for the whole cooldown and stall
+// methods that were never limited — with the default cap of two, two 429s from
+// usergroups.users.update would stop usergroups.list as well. What keeps the
+// limited method from bursting back is its own reservation in reserve(), which
+// is per method and does not borrow capacity from anything else.
+func (c *rateLimitedClient) send(req *http.Request) (*http.Response, error) {
+	select {
+	case c.slots <- struct{}{}:
+		defer func() { <-c.slots }()
+	case <-req.Context().Done():
+		return nil, req.Context().Err()
+	}
+
+	return c.inner.Do(req)
 }
 
 func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
@@ -209,15 +224,6 @@ func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
 		}
 	}
 
-	// Hold a slot for the duration of the request, retries included, so a
-	// backing-off request does not free capacity for another burst.
-	select {
-	case c.slots <- struct{}{}:
-		defer func() { <-c.slots }()
-	case <-req.Context().Done():
-		return nil, req.Context().Err()
-	}
-
 	for attempt := 0; ; attempt++ {
 		if err := c.reserve(req); err != nil {
 			return nil, err
@@ -226,7 +232,7 @@ func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {
 			req.Body = io.NopCloser(bytes.NewReader(body))
 		}
 
-		resp, err := c.inner.Do(req)
+		resp, err := c.send(req)
 		if err != nil {
 			return nil, err
 		}

@@ -6,6 +6,19 @@ import (
 	"github.com/slack-go/slack"
 )
 
+// Only one usergroups.list fetch runs at a time.
+//
+// The cache check and the fetch are not one step: every Terraform worker that
+// misses the cache would otherwise issue its own request before the first one
+// wrote the file. The slot cap in the rate limited client bounds how many of
+// those fly at once, not how many are made — with the default -parallelism of
+// 10, one expiry of the six second cache can cost ten calls instead of one.
+//
+// Callers that arrive while a fetch is in flight wait for it and then find the
+// cache populated, so the burst collapses back to the single request this is
+// supposed to be.
+var userGroupFetch = make(chan struct{}, 1)
+
 // One cached usergroups.list for everything that needs to read a usergroup.
 //
 // usergroups.list returns every group in a single response, and with
@@ -20,10 +33,22 @@ import (
 // be set by every caller that populates the cache, or a reader that needs
 // members can find a cached list that has none.
 func cachedUserGroups(ctx context.Context, client *slack.Client) ([]slack.UserGroup, error) {
-	var cached *[]slack.UserGroup
+	if groups, ok := restoreUserGroupCache(); ok {
+		return groups, nil
+	}
 
-	if restoreJsonCache(userGroupListCacheFileName, &cached) && cached != nil {
-		return *cached, nil
+	select {
+	case userGroupFetch <- struct{}{}:
+		defer func() { <-userGroupFetch }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// Look again now the fetch slot is held: whoever held it before may have
+	// filled the cache while this call was waiting, in which case there is
+	// nothing left to ask Slack for.
+	if groups, ok := restoreUserGroupCache(); ok {
+		return groups, nil
 	}
 
 	userGroups, err := client.GetUserGroupsContext(ctx, func(params *slack.GetUserGroupsParams) {
@@ -39,4 +64,14 @@ func cachedUserGroups(ctx context.Context, client *slack.Client) ([]slack.UserGr
 	saveCacheAsJson(userGroupListCacheFileName, &userGroups)
 
 	return userGroups, nil
+}
+
+func restoreUserGroupCache() ([]slack.UserGroup, bool) {
+	var cached *[]slack.UserGroup
+
+	if restoreJsonCache(userGroupListCacheFileName, &cached) && cached != nil {
+		return *cached, true
+	}
+
+	return nil, false
 }
