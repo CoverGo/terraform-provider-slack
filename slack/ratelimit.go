@@ -28,10 +28,9 @@ import (
 //
 //   - Cap requests in flight, so Terraform's parallelism does not turn into a
 //     burst Slack immediately refuses.
-//   - Retry a 429 for as long as Slack asks, up to maxRetries. The wait is not
-//     capped: Slack's Retry-After is what it will actually accept, and cutting
-//     it short only spends a retry on another 429. The request context bounds
-//     it instead, so interrupting Terraform still returns promptly.
+//   - Retry a 429 for as long as Slack asks, up to maxRetries and up to
+//     maxRetryAfter per wait. That ceiling is deliberate and is a real
+//     departure from what the server asked for — see the constant.
 //   - After a method is rate limited, serve the full Retry-After as a one-off
 //     cooldown and then keep a BOUNDED interval between later calls to THAT
 //     method. Backing off only the method that complained keeps unrelated calls
@@ -46,6 +45,18 @@ const (
 
 	// Fallback when a 429 arrives without a usable Retry-After.
 	defaultRetryAfter = 30 * time.Second
+
+	// Ceiling on a single wait, so a hostile or malformed Retry-After cannot
+	// park an apply for hours. The context bounds an interactive run, but a CI
+	// job has nobody to interrupt it and would sit there until its own timeout.
+	//
+	// This DOES disobey the server above the ceiling: asked for ten minutes,
+	// the client comes back after two and most likely collects another 429,
+	// spending a retry. That is the accepted trade — a predictable failure the
+	// logs explain beats an apply that looks hung. Observed Slack values are
+	// 30-60s, so in practice nothing is clipped; Test_rateLimitedClient_capsTheRetryAfterWait
+	// pins both halves of that.
+	maxRetryAfter = 2 * time.Minute
 
 	// Ceiling on the sustained spacing kept for a method after it has been
 	// limited.
@@ -186,7 +197,11 @@ func sleepUntil(req *http.Request, d time.Duration) error {
 
 func (c *rateLimitedClient) retryAfterFrom(resp *http.Response) time.Duration {
 	if secs, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && secs > 0 {
-		return time.Duration(secs) * time.Second
+		d := time.Duration(secs) * time.Second
+		if d > maxRetryAfter {
+			return maxRetryAfter
+		}
+		return d
 	}
 	return c.defaultWait
 }

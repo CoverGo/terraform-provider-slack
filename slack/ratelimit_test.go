@@ -206,7 +206,7 @@ func Test_rateLimitedClient_sustainedSpacingIsBounded(t *testing.T) {
 		t.Fatalf("sustained spacing %s exceeds the %s cap", spacing, maxSustainedSpacing)
 	}
 	// The full cooldown is still honoured, just not as the ongoing interval.
-	if until := time.Until(deadline); until < 9*time.Minute {
+	if until := time.Until(deadline); until < time.Minute {
 		t.Fatalf("expected the full Retry-After cooldown, deadline is only %s away", until)
 	}
 }
@@ -243,17 +243,37 @@ func Test_rateLimitedClient_honoursContextCancellation(t *testing.T) {
 	}
 }
 
-// Slack's Retry-After is what it will actually accept, so it is waited in full.
-// Cutting a long cooldown short only spends a retry on another 429, and the
-// caller would then see the retries exhausted before Slack ever said yes.
-func Test_rateLimitedClient_waitsTheFullRetryAfter(t *testing.T) {
+// The ceiling on a single wait is deliberate, and so is the fact that it
+// disobeys the server above that point: a malformed or hostile Retry-After must
+// not park a CI job, which has nobody to interrupt it.
+//
+// Both halves matter. Clipping a long value is the behaviour being chosen, and
+// NOT clipping a realistic one is what keeps that choice cheap — observed Slack
+// values are 30-60s, so nothing real is cut short. A regression in either
+// direction is a behaviour change, not a tuning detail.
+func Test_rateLimitedClient_capsTheRetryAfterWait(t *testing.T) {
 	client := newRateLimitedClient()
 
-	resp := &http.Response{Header: http.Header{}}
-	resp.Header.Set("Retry-After", "600")
+	for _, tc := range []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{"a realistic cooldown is honoured in full", "60", 60 * time.Second},
+		{"the ceiling itself passes through", "120", maxRetryAfter},
+		{"anything longer is clipped to the ceiling", "600", maxRetryAfter},
+		{"an unusable header falls back", "", defaultRetryAfter},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{Header: http.Header{}}
+			if tc.header != "" {
+				resp.Header.Set("Retry-After", tc.header)
+			}
 
-	if got, want := client.retryAfterFrom(resp), 600*time.Second; got != want {
-		t.Fatalf("Retry-After of 600s became %s, want %s", got, want)
+			if got := client.retryAfterFrom(resp); got != tc.want {
+				t.Fatalf("Retry-After %q became %s, want %s", tc.header, got, tc.want)
+			}
+		})
 	}
 }
 
