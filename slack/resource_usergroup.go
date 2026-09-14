@@ -114,36 +114,21 @@ func resourceSlackUserGroupRead(ctx context.Context, d *schema.ResourceData, met
 
 	logger.trace(ctx, "Start reading a usergroup")
 
-	// Use a cache for usergroups api call because the limitation is strict
-	var userGroups *[]slack.UserGroup
+	// One shared, cached usergroups.list serves this read, the members read and
+	// the default-channels read — see usergroups_cache.go.
+	tempUserGroups, err := cachedUserGroups(ctx, client)
 
-	if !restoreJsonCache(userGroupListCacheFileName, &userGroups) {
-		tempUserGroups, err := client.GetUserGroupsContext(ctx, func(params *slack.GetUserGroupsParams) {
-			params.IncludeUsers = false
-			params.IncludeCount = false
-			params.IncludeDisabled = true
-		})
-
-		if err != nil {
-			return diag.Diagnostics{
-				{
-					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't find slack usergroups due to *%s*", err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
-				},
-			}
-		} else {
-			logger.trace(ctx, "Got a response from Slack API")
+	if err != nil {
+		return diag.Diagnostics{
+			{
+				Severity: diag.Error,
+				Summary:  fmt.Sprintf("Slack provider couldn't find slack usergroups due to *%s*", err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
+			},
 		}
-
-		userGroups = &tempUserGroups
-
-		saveCacheAsJson(userGroupListCacheFileName, &userGroups)
-	} else {
-		logger.trace(ctx, "Read usergroups from the cahed")
 	}
 
-	for _, userGroup := range *userGroups {
+	for _, userGroup := range tempUserGroups {
 		if userGroup.ID == id {
 			configureSlackUserGroup(ctx, logger, d, userGroup)
 			return nil

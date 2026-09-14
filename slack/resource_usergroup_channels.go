@@ -109,44 +109,21 @@ func resourceSlackUserGroupChannelsRead(ctx context.Context, d *schema.ResourceD
 		}
 	}
 
-	// Use a cache for usergroups api call because the limitation is strict
-	var userGroups *[]slack.UserGroup
+	// One shared, cached usergroups.list serves this read, the usergroup read
+	// and the members read — see usergroups_cache.go.
+	userGroups, err := cachedUserGroups(ctx, client)
 
-	if !restoreJsonCache(userGroupListCacheFileName, &userGroups) {
-		tempUserGroups, err := client.GetUserGroupsContext(ctx, func(params *slack.GetUserGroupsParams) {
-			params.IncludeUsers = false
-			params.IncludeCount = false
-			params.IncludeDisabled = true
-		})
-
-		if err != nil {
-			return diag.Diagnostics{
-				{
-					Severity: diag.Error,
-					Summary:  fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
-					Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
-				},
-			}
-		} else {
-			logger.trace(ctx, "Got a response from Slack API")
-		}
-
-		userGroups = &tempUserGroups
-
-		saveCacheAsJson(userGroupListCacheFileName, &userGroups)
-	}
-
-	if userGroups == nil {
+	if err != nil {
 		return diag.Diagnostics{
 			{
 				Severity: diag.Error,
-				Summary:  fmt.Sprintf("Serious error happened while reading default channles of the slack usergroup (%s)", usergroupId),
-				Detail:   "Internal provider error. Please open an issue at https://github.com/CoverGo/terraform-provider-slack",
+				Summary:  fmt.Sprintf("Slack provider couldn't read the default channels of the slack usergroup (%s) due to *%s*", usergroupId, err.Error()),
+				Detail:   fmt.Sprintf("Please refer to %s for the details.", "https://api.slack.com/methods/usergroups.list"),
 			},
 		}
 	}
 
-	for _, userGroup := range *userGroups {
+	for _, userGroup := range userGroups {
 		if userGroup.ID == usergroupId {
 			configureSlackUserGroupChannels(ctx, logger, d, userGroup)
 			return nil
